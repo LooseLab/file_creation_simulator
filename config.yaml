@@ -1,0 +1,3 @@
+# default configs for testing the file creation simulator tool
+src_dir: test_data/src_dir
+dest_dir: test_data/dest_dir
