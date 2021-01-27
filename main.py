@@ -10,11 +10,12 @@ import configargparse
 import datetime
 from dateutil import parser as date_parser
 import logging.config
+import random
+
 with open("logging.yaml", "r") as fh:
     configDict = yaml.load(fh, Loader=yaml.FullLoader)
 logging.config.dictConfig(configDict)
 logger = logging.getLogger("simulator")
-
 
 
 def readfq(fp):  # this is a generator function
@@ -68,9 +69,15 @@ def get_files_in_src_dir(origin_dir_path):
     for root, directories, files in os.walk(origin_dir_path):
         for filey in files:
             file_path = Path(filey)
-            if not {".fastq", ".fq", ".fna", ".fa", ".fsa", ".fasta"}.intersection(set(file_path.suffixes)):
+            if not {".fastq", ".fq", ".fna", ".fa", ".fsa", ".fasta"}.intersection(
+                set(file_path.suffixes)
+            ):
                 continue
-            handler = gzip.open if {".fastq", ".fq"}.intersection(set(file_path.suffixes)) else open
+            handler = (
+                gzip.open
+                if {".fastq", ".fq"}.intersection(set(file_path.suffixes))
+                else open
+            )
             if file_path.suffix != ".fxi":
                 full_path = Path(root).joinpath(file_path)
                 times = []
@@ -78,14 +85,14 @@ def get_files_in_src_dir(origin_dir_path):
                     for desc, name, seq, qual in readfq(fh):
                         # todo add on the read length divided by 450 to get rough approximation of when read truly finished
                         read_gen_time = len(seq) / 450
-                        times.append(parse_fastq_description(desc, int(read_gen_time)))
+                        times.append(parse_fastq_description(desc, int(read_gen_time), read_name=name, file_name=filey))
                 times.sort(key=lambda x: x.isoformat())
                 file_list.append(FileInfo(full_path, times[-1]))
     file_list.sort(key=lambda x: x.file_creation_time.isoformat())
     return file_list
 
 
-def parse_fastq_description(description, read_gen_time):
+def parse_fastq_description(description, read_gen_time, **kwargs):
     """
     Parse the description found in a fastq reads header
 
@@ -95,7 +102,6 @@ def parse_fastq_description(description, read_gen_time):
         A string of the fastq reads description header
     read_gen_time: int
         Number of seconds taken for the read to actually generate - sequence length divided by 450
-
     Returns
     -------
     description_dict: dict
@@ -108,13 +114,18 @@ def parse_fastq_description(description, read_gen_time):
         if "=" in item:
             bits = item.split("=")
             description_dict[bits[0]] = bits[1]
-    print(description_dict)
     try:
-        t = date_parser.isoparse(description_dict["start_time"]) + datetime.timedelta(seconds=read_gen_time)
-        print(t)
+        t = date_parser.isoparse(description_dict["start_time"]) + datetime.timedelta(
+            seconds=read_gen_time
+        )
         return t
     except KeyError:
-        return "-1"
+        logger.warning(
+            f"No start time for read {kwargs['read_name']} in file {kwargs['file_name']}, randomly assigning time...."
+        )
+        return datetime.datetime.now() - datetime.timedelta(
+            seconds=random.randint(0, 60)
+        )
 
 
 def move_files_in_time(files, destination_dir):
@@ -142,7 +153,10 @@ def move_files_in_time(files, destination_dir):
         time.sleep(base_time)
         shutil.copy(file_1.file_name, destination_dir / file_1.file_name.parts[-2])
         if files:
-            base_time = (file_1.file_creation_time - files[0].file_creation_time).total_seconds()
+            base_time = abs((
+                file_1.file_creation_time - files[0].file_creation_time
+            ).total_seconds())
+            base_time = base_time * 3 if base_time < 5 else base_time
         logger.info(f"Moved file {file_1.file_name.name}")
 
 
@@ -163,7 +177,7 @@ def config_parser(parser):
         type=str,
         required=True,
         help="Absolute or relative path to the directory containing the FASTQ or FASTA files"
-             " to be moved as if they were being written out.",
+        " to be moved as if they were being written out.",
     )
     parser.add_argument(
         "-dd",
@@ -171,9 +185,15 @@ def config_parser(parser):
         type=str,
         required=True,
         help="Directory to move the files from the src directory to,"
-             " using last read start time as a proxy for file creation time.",
+        " using last read start time as a proxy for file creation time.",
     )
-    parser.add_argument('-c', '--config-file', required=False, is_config_file=True, help='config file path')
+    parser.add_argument(
+        "-c",
+        "--config-file",
+        required=False,
+        is_config_file=True,
+        help="config file path",
+    )
     return parser
 
 
@@ -190,13 +210,14 @@ def validate_args(args, parser):
     -------
 
     """
-    if not Path(
-        args.dest_dir
-    ).exists():
-        parser.error("Specified destination directory does not exist. Please double check given path.")
+    if not Path(args.dest_dir).exists():
+        parser.error(
+            "Specified destination directory does not exist. Please double check given path."
+        )
     if not Path(args.src_dir).exists():
-        parser.error("Specified source directory does not exist. Please double check given path.")
-
+        parser.error(
+            "Specified source directory does not exist. Please double check given path."
+        )
 
 
 def get_pickle_if_run_before(src_dir):
@@ -213,10 +234,8 @@ def get_pickle_if_run_before(src_dir):
     list of namedtuple
         List of FileInfo named Tuples, sorted by files latest read start time
     """
-    if (Path(src_dir)/"sorted_files.pickle").exists():
-        with open(
-            f"{src_dir}/sorted_files.pickle", "rb"
-        ) as fh:
+    if (Path(src_dir) / "sorted_files.pickle").exists():
+        with open(f"{src_dir}/sorted_files.pickle", "rb") as fh:
             try:
                 return pickle.load(fh)
             except EOFError as e:
@@ -257,10 +276,6 @@ if __name__ == "__main__":
     validate_args(args, parser)
     files = get_pickle_if_run_before(args.src_dir)
     if not files:
-        files = deque(
-            get_files_in_src_dir(
-                Path(args.src_dir)
-            )
-        )
+        files = deque(get_files_in_src_dir(Path(args.src_dir)))
         write_pickle(args.src_dir, files)
     move_files_in_time(files, Path(args.dest_dir))
