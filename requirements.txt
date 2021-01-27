@@ -1,1 +1,3 @@
-pyfastx
+PyYaml
+ConfigArgParse
+python-dateutil
