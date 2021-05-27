@@ -75,7 +75,7 @@ def get_files_in_src_dir(origin_dir_path):
                 continue
             handler = (
                 gzip.open
-                if {".fastq", ".fq"}.intersection(set(file_path.suffixes))
+                if {".gzip", ".gz"}.intersection(set(file_path.suffixes))
                 else open
             )
             if file_path.suffix != ".fxi":
